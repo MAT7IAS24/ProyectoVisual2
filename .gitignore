@@ -1,0 +1,4 @@
+pulso-transmi-sdk/
+.venv/
+__pycache__/
+*.pyc
