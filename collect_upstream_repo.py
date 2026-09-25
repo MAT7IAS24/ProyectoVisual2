@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg
+from psycopg.types.json import Json
 
 ROOT = Path(__file__).resolve().parent
 REMOTE_NAME = "upstream"
@@ -129,7 +130,7 @@ def upsert_snapshot(payload: dict) -> str:
                         payload["committed_at"],
                         payload["readme_excerpt"][:2000],
                         payload["file_count"],
-                        json.loads(metadata_json),
+                        Json(payload["metadata_json"]),
                     ),
                 )
                 row = cur.fetchone()
