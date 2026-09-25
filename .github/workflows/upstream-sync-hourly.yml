@@ -24,7 +24,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "httpx>=0.28,<1" "pandas>=2.2,<3" "psycopg[binary]"
+          python -m pip install "httpx>=0.28,<1" "pandas>=2.2,<3" "psycopg[binary]" "scikit-learn>=1.5,<2" "joblib>=1.4,<2"
           python -m pip install "git+https://github.com/uexternadojz/pulso-transmi-sdk.git"
 
       - name: Sync Pulso TransMi API data to Postgres
@@ -32,3 +32,10 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           python collect_pulso_api.py
+
+      - name: Select model and submit current forecast cycle
+        env:
+          PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+          PULSO_API_URL: https://pulso-transmi.72-60-245-2.sslip.io
+        run: |
+          python run_inference.py
