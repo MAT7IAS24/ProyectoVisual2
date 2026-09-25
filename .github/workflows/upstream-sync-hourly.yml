@@ -35,3 +35,9 @@ jobs:
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python collect_upstream_repo.py
+
+      - name: Sync Pulso TransMi API data to Postgres
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          PYTHONPATH=./pulso-transmi-sdk/src python collect_pulso_api.py
