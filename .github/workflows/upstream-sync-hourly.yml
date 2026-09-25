@@ -25,7 +25,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install "httpx>=0.28,<1" "pandas>=2.2,<3" "psycopg[binary]"
-          python -m pip install -e ./pulso-transmi-sdk
 
       - name: Add upstream remote and fetch latest changes
         run: |
@@ -40,5 +39,6 @@ jobs:
       - name: Sync Pulso TransMi API data to Postgres
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PYTHONPATH: ${{ github.workspace }}/pulso-transmi-sdk/src
         run: |
           python collect_pulso_api.py
