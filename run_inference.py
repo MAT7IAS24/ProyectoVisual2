@@ -113,6 +113,14 @@ def main():
         raise RuntimeError("No se pudo entrenar ningún modelo")
 
     cycle_response = httpx.get(f"{API_URL}/v1/forecast-cycles/current", timeout=30)
+    if cycle_response.status_code == 404:
+        try:
+            detail = cycle_response.json().get("detail", {})
+        except ValueError:
+            detail = {}
+        if detail.get("code") == "no_open_cycle":
+            print("No hay un ciclo de pronóstico abierto; no se envía submission en esta ejecución.")
+            return
     cycle_response.raise_for_status()
     cycle = cycle_response.json()
     predictions = []
