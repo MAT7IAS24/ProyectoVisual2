@@ -13,7 +13,13 @@ SDK_SRC = ROOT / "pulso-transmi-sdk" / "src"
 if str(SDK_SRC) not in sys.path:
     sys.path.insert(0, str(SDK_SRC))
 
-from pulso_transmi import PulsoTransmiClient
+try:
+    from pulso_transmi import PulsoTransmiClient
+except ModuleNotFoundError:
+    alt_sdk = ROOT / "pulso-transmi-sdk" / "src"
+    if str(alt_sdk) not in sys.path:
+        sys.path.insert(0, str(alt_sdk))
+    from pulso_transmi import PulsoTransmiClient
 
 
 def get_db_url() -> str:
