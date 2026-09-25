@@ -37,5 +37,6 @@ jobs:
         env:
           PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
           PULSO_API_URL: https://pulso-transmi.72-60-245-2.sslip.io
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           python run_inference.py

@@ -13,6 +13,7 @@ import httpx
 import joblib
 import numpy as np
 import pandas as pd
+import psycopg
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
 
@@ -73,6 +74,36 @@ def git_commit():
         return None
 
 
+def save_metrics(scores, model_version, cycle, commit):
+    db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        print("SUPABASE_DB_URL no está configurada; se omite el guardado de métricas.")
+        return
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            for score in scores:
+                for model_name in ["linear_regression", "ridge", "random_forest", "hist_gradient_boosting"]:
+                    cur.execute(
+                        """
+                        INSERT INTO public.model_evaluation_metrics (
+                            model_version, model_name, station_id, station_name, corridor,
+                            accuracy, cycle_id, data_cutoff, train_rows, evaluation_rows,
+                            git_commit, metadata_json
+                        )
+                        SELECT %s, %s, %s, s.station_name, s.corridor, %s, %s, %s,
+                               %s, %s, %s, %s
+                        FROM public.stations s
+                        WHERE s.station_id = %s
+                        """,
+                        (
+                            model_version, model_name, score["station_id"], score[model_name],
+                            cycle.get("cycle_id"), cycle.get("data_cutoff"), score.get("train_rows"),
+                            score.get("evaluation_rows"), commit, json.dumps({"selected": score["model"]}),
+                            score["station_id"],
+                        ),
+                    )
+
+
 def main():
     api_key = os.getenv("PULSO_API_KEY")
     if not api_key:
@@ -107,7 +138,7 @@ def main():
         latest = frame.iloc[-1][FEATURES].to_dict()
         bundles[station_id] = {"model": best_model, "feature_cols": FEATURES, "last_known": latest}
         selected[station_id] = best_name
-        scores.append({"station_id": station_id, "model": best_name, "accuracy": station_scores[best_name], **station_scores})
+        scores.append({"station_id": station_id, "model": best_name, "accuracy": station_scores[best_name], "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
 
     if not bundles:
         raise RuntimeError("No se pudo entrenar ningún modelo")
@@ -135,6 +166,7 @@ def main():
 
     model_names = sorted(set(selected.values()))
     version = "adaptive_" + "_".join(model_names)
+    save_metrics(scores, version, cycle, git_commit())
     payload = {
         "schema_version": "1.0", "cycle_id": cycle["cycle_id"],
         "client_run_id": f"adaptive_{uuid.uuid4().hex[:12]}", "data_cutoff": cycle["data_cutoff"],
