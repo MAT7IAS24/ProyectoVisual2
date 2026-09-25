@@ -1,0 +1,13 @@
+station_id,station_name,corridor,train_rows,val_rows,test_rows,val_accuracy,test_accuracy
+05100,Banderas,Américas,2534,844,846,87.2433,87.4986
+07107,Universidad Nacional,NQS,2534,844,846,86.1107,86.9304
+03000,Portal Suba,Suba,2534,844,846,86.296,86.467
+06111,Universidades – CityU,Calle 26,2534,844,846,85.1753,86.2402
+07105,Movistar Arena,NQS,2534,844,846,85.6308,86.2302
+07111,Ricaurte - NQS,NQS,2534,844,846,86.8156,86.1863
+05000,Portal Américas,Américas,2534,844,846,85.6304,86.0981
+06000,Portal El Dorado – C.C. NUESTRO BOGOTÁ,Calle 26,2534,844,846,85.5106,85.9289
+09122,Calle 72,Caracas,2534,844,846,83.2146,85.5505
+09000,Portal Usme,Caracas,2534,844,846,84.732,85.4826
+10009,Museo Nacional,Carrera 7-10,2534,844,846,85.5285,85.4745
+02300,Calle 100 - Marketmedios,Autonorte,2534,844,846,82.1072,83.2412

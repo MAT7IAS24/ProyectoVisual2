@@ -1,0 +1,37 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install psycopg[binary]
+
+      - name: Add upstream remote and fetch latest changes
+        run: |
+          git remote add upstream https://github.com/uexternadojz/pulso-transmi-sdk.git 2>/dev/null || true
+          git fetch upstream --prune
+
+      - name: Sync latest upstream snapshot to Supabase
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python collect_upstream_repo.py

@@ -1,0 +1,64 @@
+{
+  "per_station_accuracy": [
+    {
+      "station_id": "02300",
+      "corridor": "Autonorte",
+      "test_accuracy": 83.2485
+    },
+    {
+      "station_id": "03000",
+      "corridor": "Suba",
+      "test_accuracy": 86.4672
+    },
+    {
+      "station_id": "05000",
+      "corridor": "Am\u00e9ricas",
+      "test_accuracy": 86.1244
+    },
+    {
+      "station_id": "05100",
+      "corridor": "Am\u00e9ricas",
+      "test_accuracy": 87.4953
+    },
+    {
+      "station_id": "06000",
+      "corridor": "Calle 26",
+      "test_accuracy": 85.9264
+    },
+    {
+      "station_id": "06111",
+      "corridor": "Calle 26",
+      "test_accuracy": 86.2395
+    },
+    {
+      "station_id": "07105",
+      "corridor": "NQS",
+      "test_accuracy": 86.2285
+    },
+    {
+      "station_id": "07107",
+      "corridor": "NQS",
+      "test_accuracy": 86.9295
+    },
+    {
+      "station_id": "07111",
+      "corridor": "NQS",
+      "test_accuracy": 86.1764
+    },
+    {
+      "station_id": "09000",
+      "corridor": "Caracas",
+      "test_accuracy": 85.4729
+    },
+    {
+      "station_id": "09122",
+      "corridor": "Caracas",
+      "test_accuracy": 85.5497
+    },
+    {
+      "station_id": "10009",
+      "corridor": "Carrera 7-10",
+      "test_accuracy": 85.4741
+    }
+  ]
+}

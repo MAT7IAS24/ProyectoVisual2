@@ -1,0 +1,9 @@
+artifact_location: file:///home/matti/code/ProyectoVisual2/mlruns/352301811088313934
+creation_time: 1789763354322
+effective_trace_archival_retention: null
+experiment_id: '352301811088313934'
+last_update_time: 1789763354322
+lifecycle_stage: active
+name: PulsoTransMi-Experiments
+trace_location: null
+workspace: default

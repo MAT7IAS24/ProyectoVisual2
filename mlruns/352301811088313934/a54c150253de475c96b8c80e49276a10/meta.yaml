@@ -1,0 +1,14 @@
+artifact_uri: file:///home/matti/code/ProyectoVisual2/mlruns/352301811088313934/a54c150253de475c96b8c80e49276a10/artifacts
+end_time: 1789763362032
+entry_point_name: ''
+experiment_id: '352301811088313934'
+lifecycle_stage: active
+run_id: a54c150253de475c96b8c80e49276a10
+run_name: exp_01_linear_regression
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1789763361973
+status: 3
+tags: []
+user_id: matti
