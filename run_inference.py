@@ -233,7 +233,7 @@ def main():
     payload = {
         "schema_version": "1.0", "cycle_id": cycle["cycle_id"],
         "client_run_id": f"adaptive_{uuid.uuid4().hex[:12]}", "data_cutoff": cycle["data_cutoff"],
-        "model": {"version": version, "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "training_data_end": cycle["data_cutoff"], "git_commit": git_commit(), "station_models": selected},
+        "model": {"version": version, "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "training_data_end": cycle["data_cutoff"], "git_commit": git_commit()},
         "predictions": predictions,
     }
     response = httpx.post(f"{API_URL}/v1/submissions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Idempotency-Key": uuid.uuid4().hex}, json=payload, timeout=60)
