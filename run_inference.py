@@ -21,6 +21,7 @@ from pulso_transmi import PulsoTransmiClient
 
 ROOT = Path(__file__).resolve().parent
 API_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io")
+DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "3.0"))
 FEATURES = [
     "lag_1", "lag_2", "lag_3", "lag_4", "lag_6", "lag_12", "lag_24", "lag_48", "lag_96",
     "rolling_mean_3", "rolling_mean_6", "rolling_mean_12", "rolling_mean_24", "rolling_mean_48", "rolling_mean_96",
@@ -104,6 +105,37 @@ def save_metrics(scores, model_version, cycle, commit):
                     )
 
 
+def champion_state():
+    db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        return None
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT model_name, model_version, last_accuracy FROM public.model_registry WHERE is_champion = TRUE LIMIT 1")
+            row = cur.fetchone()
+    return {"model_name": row[0], "model_version": row[1], "last_accuracy": float(row[2]) if row[2] is not None else None} if row else None
+
+
+def save_drift_and_champion(champion, model_name, model_version, baseline, recent, drift, cycle, commit):
+    db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        return
+    drop = (baseline - recent) if baseline is not None else None
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO public.drift_events
+                (model_name, model_version, baseline_accuracy, recent_accuracy, accuracy_drop, threshold, drift_detected, action_taken, cycle_id, git_commit)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (champion["model_name"] if champion else model_name, champion["model_version"] if champion else model_version,
+                 baseline, recent, drop, DRIFT_THRESHOLD, drift, "evaluate_challengers" if drift else "retrain_champion",
+                 cycle.get("cycle_id"), commit))
+            cur.execute("UPDATE public.model_registry SET is_champion = FALSE WHERE is_champion = TRUE")
+            cur.execute("""INSERT INTO public.model_registry (model_name, model_version, is_champion, last_retrained_at, last_accuracy, git_commit)
+                VALUES (%s,%s,TRUE,NOW(),%s,%s)
+                ON CONFLICT (model_name, model_version) DO UPDATE SET is_champion=TRUE, last_retrained_at=NOW(), last_accuracy=EXCLUDED.last_accuracy, git_commit=EXCLUDED.git_commit""",
+                (model_name, model_version, recent, commit))
+
+
 def main():
     api_key = os.getenv("PULSO_API_KEY")
     if not api_key:
@@ -120,6 +152,7 @@ def main():
 
     full = observations.merge(stations[["station_id", "station_name", "corridor", "latitude", "longitude"]], on="station_id")
     full = add_features(full.merge(context, on="observed_at", how="left"))
+    champion = champion_state()
     selected, bundles, scores = {}, {}, []
 
     for station_id, frame in full.groupby("station_id"):
@@ -164,8 +197,18 @@ def main():
         value = max(0.0, float(bundle["model"].predict(pd.DataFrame([row], columns=FEATURES))[0]))
         predictions.append({"station_id": station_id, "target_at": target["target_at"], "value": round(value, 4)})
 
+    champion_recent = float(np.mean([s[champion["model_name"]] for s in scores])) if champion and champion["model_name"] in candidates() else None
+    drift = bool(champion and champion["last_accuracy"] is not None and champion_recent is not None and champion["last_accuracy"] - champion_recent >= DRIFT_THRESHOLD)
+    if champion and not drift:
+        selected = {station_id: champion["model_name"] for station_id in bundles}
+        for station_id, frame in full.groupby("station_id"):
+            model = candidates()[champion["model_name"]]
+            model.fit(frame[FEATURES], frame["demand"])
+            bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": frame.iloc[-1][FEATURES].to_dict()}
     model_names = sorted(set(selected.values()))
     version = "adaptive_" + "_".join(model_names)
+    recent_accuracy = float(np.mean([s[selected[s["station_id"]]] for s in scores]))
+    save_drift_and_champion(champion, model_names[0], version, champion["last_accuracy"] if champion else None, recent_accuracy, drift, cycle, git_commit())
     save_metrics(scores, version, cycle, git_commit())
     payload = {
         "schema_version": "1.0", "cycle_id": cycle["cycle_id"],
