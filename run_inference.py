@@ -68,6 +68,25 @@ def candidates():
     }
 
 
+def recursive_predictions(bundle, targets):
+    """Predict future horizons sequentially, feeding predictions into future lags."""
+    history = list(bundle["history"])
+    static = bundle["static"]
+    output = []
+    for target in sorted(targets, key=lambda item: item["target_at"]):
+        target_dt = datetime.fromisoformat(target["target_at"].replace("Z", "+00:00"))
+        row = dict(static)
+        row.update(hour=target_dt.hour, minute=target_dt.minute, dayofweek=target_dt.weekday(), is_weekend=int(target_dt.weekday() >= 5), month=target_dt.month)
+        for lag in [1, 2, 3, 4, 6, 12, 24, 48, 96]:
+            row[f"lag_{lag}"] = history[-lag] if len(history) >= lag else history[0]
+        for window in [3, 6, 12, 24, 48, 96]:
+            row[f"rolling_mean_{window}"] = float(np.mean(history[-window:]))
+        value = max(0.0, float(bundle["model"].predict(pd.DataFrame([row], columns=FEATURES))[0]))
+        history.append(value)
+        output.append({"station_id": str(target["station_id"]), "target_at": target["target_at"], "value": round(value, 4)})
+    return output
+
+
 def git_commit():
     try:
         return subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -169,7 +188,9 @@ def main():
         best_model = candidates()[best_name]
         best_model.fit(frame[FEATURES], frame["demand"])
         latest = frame.iloc[-1][FEATURES].to_dict()
-        bundles[station_id] = {"model": best_model, "feature_cols": FEATURES, "last_known": latest}
+        bundles[station_id] = {"model": best_model, "feature_cols": FEATURES, "last_known": latest,
+                               "history": frame["demand"].astype(float).tail(96).tolist(),
+                               "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
         selected[station_id] = best_name
         scores.append({"station_id": station_id, "model": best_name, "accuracy": station_scores[best_name], "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
 
@@ -187,16 +208,6 @@ def main():
             return
     cycle_response.raise_for_status()
     cycle = cycle_response.json()
-    predictions = []
-    for target in cycle.get("targets", []):
-        station_id = str(target["station_id"])
-        bundle = bundles[station_id]
-        target_dt = datetime.fromisoformat(target["target_at"].replace("Z", "+00:00"))
-        row = bundle["last_known"].copy()
-        row.update(hour=target_dt.hour, minute=target_dt.minute, dayofweek=target_dt.weekday(), is_weekend=int(target_dt.weekday() >= 5), month=target_dt.month)
-        value = max(0.0, float(bundle["model"].predict(pd.DataFrame([row], columns=FEATURES))[0]))
-        predictions.append({"station_id": station_id, "target_at": target["target_at"], "value": round(value, 4)})
-
     champion_recent = float(np.mean([s[champion["model_name"]] for s in scores])) if champion and champion["model_name"] in candidates() else None
     drift = bool(champion and champion["last_accuracy"] is not None and champion_recent is not None and champion["last_accuracy"] - champion_recent >= DRIFT_THRESHOLD)
     if champion and not drift:
@@ -204,16 +215,25 @@ def main():
         for station_id, frame in full.groupby("station_id"):
             model = candidates()[champion["model_name"]]
             model.fit(frame[FEATURES], frame["demand"])
-            bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": frame.iloc[-1][FEATURES].to_dict()}
+            latest = frame.iloc[-1]
+            bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(),
+                                   "history": frame["demand"].astype(float).tail(96).tolist(),
+                                   "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
     model_names = sorted(set(selected.values()))
     version = "adaptive_" + "_".join(model_names)
     recent_accuracy = float(np.mean([s[selected[s["station_id"]]] for s in scores]))
     save_drift_and_champion(champion, model_names[0], version, champion["last_accuracy"] if champion else None, recent_accuracy, drift, cycle, git_commit())
     save_metrics(scores, version, cycle, git_commit())
+    targets_by_station = {}
+    for target in cycle.get("targets", []):
+        targets_by_station.setdefault(str(target["station_id"]), []).append(target)
+    predictions = []
+    for station_id, targets in targets_by_station.items():
+        predictions.extend(recursive_predictions(bundles[station_id], targets))
     payload = {
         "schema_version": "1.0", "cycle_id": cycle["cycle_id"],
         "client_run_id": f"adaptive_{uuid.uuid4().hex[:12]}", "data_cutoff": cycle["data_cutoff"],
-        "model": {"version": version, "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "training_data_end": cycle["data_cutoff"], "git_commit": git_commit()},
+        "model": {"version": version, "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "training_data_end": cycle["data_cutoff"], "git_commit": git_commit(), "station_models": selected},
         "predictions": predictions,
     }
     response = httpx.post(f"{API_URL}/v1/submissions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Idempotency-Key": uuid.uuid4().hex}, json=payload, timeout=60)
