@@ -28,7 +28,6 @@ FEATURES = [
     "lag_1", "lag_2", "lag_3", "lag_4", "lag_6", "lag_12", "lag_24", "lag_48", "lag_96",
     "rolling_mean_3", "rolling_mean_6", "rolling_mean_12", "rolling_mean_24", "rolling_mean_48", "rolling_mean_96",
     "hour", "minute", "dayofweek", "is_weekend", "month",
-    "rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity",
     "latitude", "longitude",
 ]
 
@@ -139,6 +138,40 @@ def champion_state():
     return {"model_name": row[0], "model_version": row[1], "last_accuracy": float(row[2]) if row[2] is not None else None} if row else None
 
 
+def already_submitted(cycle_id):
+    db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        return False
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM public.forecast_submissions WHERE cycle_id = %s LIMIT 1", (cycle_id,))
+            return cur.fetchone() is not None
+
+
+def save_submission(cycle, payload, response, predictions, commit):
+    db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
+    if not db_url:
+        print("SUPABASE_DB_URL no está configurada; se omite la trazabilidad de submission.")
+        return
+    cutoff = datetime.fromisoformat(cycle["data_cutoff"].replace("Z", "+00:00"))
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO public.forecast_submissions
+                (cycle_id, client_run_id, model_version, api_status, api_response, git_commit)
+                VALUES (%s,%s,%s,%s,%s,%s) RETURNING submission_id""",
+                (cycle["cycle_id"], payload["client_run_id"], payload["model"]["version"], response.status_code, json.dumps(response.json()), commit))
+            submission_id = cur.fetchone()[0]
+            for prediction in predictions:
+                target_at = datetime.fromisoformat(prediction["target_at"].replace("Z", "+00:00"))
+                horizon = round((target_at - cutoff).total_seconds() / 60)
+                cur.execute("""INSERT INTO public.forecast_predictions
+                    (submission_id, cycle_id, station_id, target_at, horizon_minutes, predicted_demand)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (cycle_id, station_id, target_at) DO UPDATE SET
+                        predicted_demand = EXCLUDED.predicted_demand""",
+                    (submission_id, cycle["cycle_id"], prediction["station_id"], target_at, horizon, prediction["value"]))
+
+
 def save_drift_and_champion(champion, model_name, model_version, baseline, recent, drift, cycle, commit):
     db_url = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
     if not db_url:
@@ -217,6 +250,9 @@ def main():
             return
     cycle_response.raise_for_status()
     cycle = cycle_response.json()
+    if already_submitted(cycle["cycle_id"]):
+        print(f"El ciclo {cycle['cycle_id']} ya tiene una submission registrada; se omite el duplicado.")
+        return
     champion_recent = float(np.mean([s[champion["model_name"]] for s in scores])) if champion and champion["model_name"] in candidates() else None
     drift = bool(champion and champion["last_accuracy"] is not None and champion_recent is not None and champion["last_accuracy"] - champion_recent >= DRIFT_THRESHOLD)
     if champion and not drift:
@@ -248,6 +284,8 @@ def main():
     response = httpx.post(f"{API_URL}/v1/submissions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Idempotency-Key": uuid.uuid4().hex}, json=payload, timeout=60)
     print(json.dumps({"status_code": response.status_code, "response": response.json(), "selected_models": scores}, indent=2, default=str))
     response.raise_for_status()
+    if response.status_code in (200, 201):
+        save_submission(cycle, payload, response, predictions, git_commit())
     joblib.dump(bundles, ROOT / "model_artifacts" / "adaptive_models.joblib")
 
 
