@@ -16,6 +16,7 @@ import pandas as pd
 import psycopg
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
+from pulso_stream import stream_observations_dataframe
 
 from pulso_transmi import PulsoTransmiClient
 
@@ -165,7 +166,12 @@ def main():
 
     client = PulsoTransmiClient()
     stations = client.stations()
-    observations = client.observations_dataframe(page_size=5000)
+    base_observations = client.observations_dataframe(page_size=5000)
+    stream_observations = stream_observations_dataframe()
+    if "released_at" not in base_observations:
+        base_observations["released_at"] = pd.NaT
+    observations = pd.concat([base_observations, stream_observations], ignore_index=True)
+    observations = observations.drop_duplicates(subset=["station_id", "observed_at"], keep="last")
     context = client.context_dataframe(page_size=5000)
     for frame in (stations, observations):
         frame["station_id"] = frame["station_id"].astype(str)

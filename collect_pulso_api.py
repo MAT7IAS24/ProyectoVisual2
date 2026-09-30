@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg
+from pulso_stream import stream_observations_dataframe
 
 ROOT = Path(__file__).resolve().parent
 SDK_SRC = ROOT / "pulso-transmi-sdk" / "src"
@@ -69,6 +70,7 @@ def upsert_observations(conn: psycopg.Connection, frame: pd.DataFrame) -> int:
             str(row["station_id"]),
             row["observed_at"].to_pydatetime(),
             int(row["demand"]),
+            None if pd.isna(row["released_at"]) else row["released_at"].to_pydatetime(),
         )
         for _, row in frame.iterrows()
     ]
@@ -76,10 +78,11 @@ def upsert_observations(conn: psycopg.Connection, frame: pd.DataFrame) -> int:
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO demand_observations (station_id, observed_at, demand)
-            VALUES (%s, %s, %s)
+            INSERT INTO demand_observations (station_id, observed_at, demand, released_at)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (station_id, observed_at) DO UPDATE SET
-                demand = EXCLUDED.demand
+                demand = EXCLUDED.demand,
+                released_at = EXCLUDED.released_at
             """,
             rows,
         )
@@ -130,7 +133,12 @@ def main() -> None:
     client = PulsoTransmiClient()
 
     stations = client.stations()
-    observations = client.observations_dataframe(page_size=5000)
+    base_observations = client.observations_dataframe(page_size=5000)
+    stream_observations = stream_observations_dataframe()
+    if "released_at" not in base_observations:
+        base_observations["released_at"] = pd.NaT
+    observations = pd.concat([base_observations, stream_observations], ignore_index=True)
+    observations = observations.drop_duplicates(subset=["station_id", "observed_at"], keep="last")
     context = client.context_dataframe(page_size=5000)
 
     db_url = get_db_url()
