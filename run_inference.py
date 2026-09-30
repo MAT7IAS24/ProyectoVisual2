@@ -28,6 +28,7 @@ FEATURES = [
     "lag_1", "lag_2", "lag_3", "lag_4", "lag_6", "lag_12", "lag_24", "lag_48", "lag_96",
     "rolling_mean_3", "rolling_mean_6", "rolling_mean_12", "rolling_mean_24", "rolling_mean_48", "rolling_mean_96",
     "hour", "minute", "dayofweek", "is_weekend", "month",
+    "rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity",
     "latitude", "longitude",
 ]
 
