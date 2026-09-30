@@ -22,6 +22,7 @@ from pulso_transmi import PulsoTransmiClient
 ROOT = Path(__file__).resolve().parent
 API_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io")
 DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "3.0"))
+MODEL_WEIGHT = float(os.getenv("MODEL_WEIGHT", "0.6"))
 FEATURES = [
     "lag_1", "lag_2", "lag_3", "lag_4", "lag_6", "lag_12", "lag_24", "lag_48", "lag_96",
     "rolling_mean_3", "rolling_mean_6", "rolling_mean_12", "rolling_mean_24", "rolling_mean_48", "rolling_mean_96",
@@ -81,7 +82,9 @@ def recursive_predictions(bundle, targets):
             row[f"lag_{lag}"] = history[-lag] if len(history) >= lag else history[0]
         for window in [3, 6, 12, 24, 48, 96]:
             row[f"rolling_mean_{window}"] = float(np.mean(history[-window:]))
-        value = max(0.0, float(bundle["model"].predict(pd.DataFrame([row], columns=FEATURES))[0]))
+        model_value = float(bundle["model"].predict(pd.DataFrame([row], columns=FEATURES))[0])
+        seasonal_value = float(row["lag_96"])
+        value = max(0.0, MODEL_WEIGHT * model_value + (1.0 - MODEL_WEIGHT) * seasonal_value)
         history.append(value)
         output.append({"station_id": str(target["station_id"]), "target_at": target["target_at"], "value": round(value, 4)})
     return output
