@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent
 API_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io")
 DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "3.0"))
 MODEL_WEIGHT = float(os.getenv("MODEL_WEIGHT", "0.6"))
+ENSEMBLE_WEIGHTS = (1.0, 0.8, 0.6, 0.4, 0.2, 0.0)
 FEATURES = [
     "lag_1", "lag_2", "lag_3", "lag_4", "lag_6", "lag_12", "lag_24", "lag_48", "lag_96",
     "rolling_mean_3", "rolling_mean_6", "rolling_mean_12", "rolling_mean_24", "rolling_mean_48", "rolling_mean_96",
@@ -85,7 +86,8 @@ def recursive_predictions(bundle, targets):
             row[f"rolling_mean_{window}"] = float(np.mean(history[-window:]))
         model_value = float(bundle["model"].predict(pd.DataFrame([row], columns=FEATURES))[0])
         seasonal_value = float(row["lag_96"])
-        value = max(0.0, MODEL_WEIGHT * model_value + (1.0 - MODEL_WEIGHT) * seasonal_value)
+        weight = bundle.get("model_weight", MODEL_WEIGHT)
+        value = max(0.0, weight * model_value + (1.0 - weight) * seasonal_value)
         history.append(value)
         output.append({"station_id": str(target["station_id"]), "target_at": target["target_at"], "value": round(value, 4)})
     return output
@@ -122,10 +124,17 @@ def save_metrics(scores, model_version, cycle, commit):
                         (
                             model_version, model_name, score["station_id"], score[model_name],
                             cycle.get("cycle_id"), cycle.get("data_cutoff"), score.get("train_rows"),
-                            score.get("evaluation_rows"), commit, json.dumps({"selected": score["model"]}),
+                            score.get("evaluation_rows"), commit, json.dumps({"selected": score["model"], "model_weight": score.get("model_weight")}),
                             score["station_id"],
                         ),
                     )
+
+
+def merge_context_asof(observations, context):
+    """Attach the latest known context at or before each observation timestamp."""
+    left = observations.sort_values("observed_at").copy()
+    right = context.sort_values("observed_at").copy()
+    return pd.merge_asof(left, right, on="observed_at", direction="backward")
 
 
 def champion_state():
@@ -213,7 +222,7 @@ def main():
     context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
 
     full = observations.merge(stations[["station_id", "station_name", "corridor", "latitude", "longitude"]], on="station_id")
-    full = add_features(full.merge(context, on="observed_at", how="left"))
+    full = add_features(merge_context_asof(full, context))
     champion = champion_state()
     selected, bundles, scores = {}, {}, []
 
@@ -224,18 +233,25 @@ def main():
             continue
         station_candidates = candidates()
         station_scores = {}
+        best_name, best_weight, best_score = None, None, -float("inf")
         for name, model in station_candidates.items():
             model.fit(train[FEATURES], train["demand"])
-            station_scores[name] = accuracy(recent["demand"], model.predict(recent[FEATURES]))
-        best_name = max(station_scores, key=station_scores.get)
+            model_pred = model.predict(recent[FEATURES])
+            station_scores[name] = accuracy(recent["demand"], model_pred)
+            for weight in ENSEMBLE_WEIGHTS:
+                blended = weight * model_pred + (1.0 - weight) * recent["lag_96"].to_numpy(dtype=float)
+                score = accuracy(recent["demand"], blended)
+                if score > best_score:
+                    best_name, best_weight, best_score = name, weight, score
         best_model = candidates()[best_name]
         best_model.fit(frame[FEATURES], frame["demand"])
         latest = frame.iloc[-1][FEATURES].to_dict()
         bundles[station_id] = {"model": best_model, "feature_cols": FEATURES, "last_known": latest,
                                "history": frame["demand"].astype(float).tail(96).tolist(),
-                               "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
+                               "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]},
+                               "model_weight": best_weight}
         selected[station_id] = best_name
-        scores.append({"station_id": station_id, "model": best_name, "accuracy": station_scores[best_name], "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
+        scores.append({"station_id": station_id, "model": best_name, "model_weight": best_weight, "accuracy": best_score, "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
 
     if not bundles:
         raise RuntimeError("No se pudo entrenar ningún modelo")
@@ -262,7 +278,7 @@ def main():
             model = candidates()[champion["model_name"]]
             model.fit(frame[FEATURES], frame["demand"])
             latest = frame.iloc[-1]
-            bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(),
+            bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(), "model_weight": MODEL_WEIGHT,
                                    "history": frame["demand"].astype(float).tail(96).tolist(),
                                    "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
     model_names = sorted(set(selected.values()))
@@ -276,6 +292,8 @@ def main():
     predictions = []
     for station_id, targets in targets_by_station.items():
         predictions.extend(recursive_predictions(bundles[station_id], targets))
+    values = [item["value"] for item in predictions]
+    print(json.dumps({"prediction_count": len(values), "prediction_min": min(values) if values else None, "prediction_max": max(values) if values else None, "prediction_mean": float(np.mean(values)) if values else None}, indent=2))
     payload = {
         "schema_version": "1.0", "cycle_id": cycle["cycle_id"],
         "client_run_id": f"adaptive_{uuid.uuid4().hex[:12]}", "data_cutoff": cycle["data_cutoff"],
