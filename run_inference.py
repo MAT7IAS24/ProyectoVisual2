@@ -25,6 +25,8 @@ API_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io
 DRIFT_THRESHOLD = float(os.getenv("DRIFT_THRESHOLD", "3.0"))
 MODEL_WEIGHT = float(os.getenv("MODEL_WEIGHT", "0.6"))
 ENSEMBLE_WEIGHTS = (1.0, 0.8, 0.6, 0.4, 0.2, 0.0)
+STABILITY_PENALTY = 0.5
+CHALLENGER_MARGIN = 2.0
 FEATURES = [
     "lag_1", "lag_2", "lag_3", "lag_4", "lag_6", "lag_12", "lag_24", "lag_48", "lag_96",
     "rolling_mean_3", "rolling_mean_6", "rolling_mean_12", "rolling_mean_24", "rolling_mean_48", "rolling_mean_96",
@@ -40,6 +42,15 @@ def accuracy(y_true, y_pred) -> float:
     if denominator == 0:
         return 100.0
     return float(max(0.0, 100.0 * (1 - np.abs(y_true - y_pred).sum() / denominator)))
+
+
+def stable_accuracy(y_true, y_pred, blocks=6):
+    """Mean block accuracy minus a variability penalty."""
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    chunks = np.array_split(np.arange(len(y_true)), min(blocks, len(y_true)))
+    values = [accuracy(y_true[index], y_pred[index]) for index in chunks if len(index)]
+    return float(np.mean(values) - STABILITY_PENALTY * np.std(values))
 
 
 def add_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -88,6 +99,8 @@ def recursive_predictions(bundle, targets):
         seasonal_value = float(row["lag_96"])
         weight = bundle.get("model_weight", MODEL_WEIGHT)
         value = max(0.0, weight * model_value + (1.0 - weight) * seasonal_value)
+        if seasonal_value > 0:
+            value = min(max(value, 0.5 * seasonal_value), 1.5 * seasonal_value)
         history.append(value)
         output.append({"station_id": str(target["station_id"]), "target_at": target["target_at"], "value": round(value, 4)})
     return output
@@ -240,7 +253,7 @@ def main():
             station_scores[name] = accuracy(recent["demand"], model_pred)
             for weight in ENSEMBLE_WEIGHTS:
                 blended = weight * model_pred + (1.0 - weight) * recent["lag_96"].to_numpy(dtype=float)
-                score = accuracy(recent["demand"], blended)
+                score = stable_accuracy(recent["demand"], blended)
                 if score > best_score:
                     best_name, best_weight, best_score = name, weight, score
         best_model = candidates()[best_name]
@@ -251,7 +264,7 @@ def main():
                                "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]},
                                "model_weight": best_weight}
         selected[station_id] = best_name
-        scores.append({"station_id": station_id, "model": best_name, "model_weight": best_weight, "accuracy": best_score, "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
+        scores.append({"station_id": station_id, "model": best_name, "model_weight": best_weight, "accuracy": best_score, "stability_score": best_score, "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
 
     if not bundles:
         raise RuntimeError("No se pudo entrenar ningún modelo")
@@ -281,6 +294,20 @@ def main():
             bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(), "model_weight": MODEL_WEIGHT,
                                    "history": frame["demand"].astype(float).tail(96).tolist(),
                                    "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
+    elif champion and drift:
+        # A challenger must beat the champion by a meaningful margin; otherwise keep it.
+        for score in scores:
+            champion_score = score.get(champion["model_name"], -float("inf"))
+            if score["accuracy"] < champion_score + CHALLENGER_MARGIN:
+                station_id = score["station_id"]
+                selected[station_id] = champion["model_name"]
+                frame = full[full["station_id"] == station_id]
+                model = candidates()[champion["model_name"]]
+                model.fit(frame[FEATURES], frame["demand"])
+                latest = frame.iloc[-1]
+                bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(), "model_weight": MODEL_WEIGHT,
+                                       "history": frame["demand"].astype(float).tail(96).tolist(),
+                                       "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
     model_names = sorted(set(selected.values()))
     version = "adaptive_" + "_".join(model_names)
     recent_accuracy = float(np.mean([s[selected[s["station_id"]]] for s in scores]))
