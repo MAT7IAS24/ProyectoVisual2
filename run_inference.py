@@ -156,9 +156,10 @@ def champion_state():
         return None
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT model_name, model_version, last_accuracy FROM public.model_registry WHERE is_champion = TRUE LIMIT 1")
+            cur.execute("SELECT model_name, model_version, last_accuracy, baseline_accuracy FROM public.model_registry WHERE is_champion = TRUE LIMIT 1")
             row = cur.fetchone()
-    return {"model_name": row[0], "model_version": row[1], "last_accuracy": float(row[2]) if row[2] is not None else None} if row else None
+    return {"model_name": row[0], "model_version": row[1], "last_accuracy": float(row[2]) if row[2] is not None else None,
+            "baseline_accuracy": float(row[3]) if row[3] is not None else (float(row[2]) if row[2] is not None else None)} if row else None
 
 
 def already_submitted(cycle_id):
@@ -209,10 +210,15 @@ def save_drift_and_champion(champion, model_name, model_version, baseline, recen
                  baseline, recent, drop, DRIFT_THRESHOLD, drift, "evaluate_challengers" if drift else "retrain_champion",
                  cycle.get("cycle_id"), commit))
             cur.execute("UPDATE public.model_registry SET is_champion = FALSE WHERE is_champion = TRUE")
-            cur.execute("""INSERT INTO public.model_registry (model_name, model_version, is_champion, last_retrained_at, last_accuracy, git_commit)
-                VALUES (%s,%s,TRUE,NOW(),%s,%s)
-                ON CONFLICT (model_name, model_version) DO UPDATE SET is_champion=TRUE, last_retrained_at=NOW(), last_accuracy=EXCLUDED.last_accuracy, git_commit=EXCLUDED.git_commit""",
-                (model_name, model_version, recent, commit))
+            same_champion = bool(champion and champion["model_name"] == model_name and champion["model_version"] == model_version)
+            cur.execute("""INSERT INTO public.model_registry (model_name, model_version, is_champion, last_retrained_at, last_accuracy, baseline_accuracy, baseline_set_at, git_commit)
+                VALUES (%s,%s,TRUE,NOW(),%s,%s,NOW(),%s)
+                ON CONFLICT (model_name, model_version) DO UPDATE SET
+                    is_champion=TRUE, last_retrained_at=NOW(), last_accuracy=EXCLUDED.last_accuracy,
+                    baseline_accuracy=CASE WHEN %s THEN public.model_registry.baseline_accuracy ELSE EXCLUDED.last_accuracy END,
+                    baseline_set_at=CASE WHEN %s THEN public.model_registry.baseline_set_at ELSE NOW() END,
+                    git_commit=EXCLUDED.git_commit""",
+                (model_name, model_version, recent, recent, commit, same_champion, same_champion))
 
 
 def main():
@@ -284,7 +290,7 @@ def main():
         print(f"El ciclo {cycle['cycle_id']} ya tiene una submission registrada; se omite el duplicado.")
         return
     champion_recent = float(np.mean([s[champion["model_name"]] for s in scores])) if champion and champion["model_name"] in candidates() else None
-    drift = bool(champion and champion["last_accuracy"] is not None and champion_recent is not None and champion["last_accuracy"] - champion_recent >= DRIFT_THRESHOLD)
+    drift = bool(champion and champion["baseline_accuracy"] is not None and champion_recent is not None and champion["baseline_accuracy"] - champion_recent >= DRIFT_THRESHOLD)
     if champion and not drift:
         selected = {station_id: champion["model_name"] for station_id in bundles}
         for station_id, frame in full.groupby("station_id"):
@@ -311,7 +317,7 @@ def main():
     model_names = sorted(set(selected.values()))
     version = "adaptive_" + "_".join(model_names)
     recent_accuracy = float(np.mean([s[selected[s["station_id"]]] for s in scores]))
-    save_drift_and_champion(champion, model_names[0], version, champion["last_accuracy"] if champion else None, recent_accuracy, drift, cycle, git_commit())
+    save_drift_and_champion(champion, model_names[0], version, champion["baseline_accuracy"] if champion else None, recent_accuracy, drift, cycle, git_commit())
     save_metrics(scores, version, cycle, git_commit())
     targets_by_station = {}
     for target in cycle.get("targets", []):
