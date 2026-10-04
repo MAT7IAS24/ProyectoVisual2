@@ -106,6 +106,51 @@ def recursive_predictions(bundle, targets):
     return output
 
 
+def train_direct_models(frame):
+    """Train one model per forecast horizon using future-shifted targets."""
+    direct = {}
+    for horizon in range(1, 5):
+        supervised = frame.copy()
+        supervised["target"] = supervised["demand"].shift(-horizon)
+        supervised = supervised.dropna(subset=["target", *FEATURES])
+        split = max(20, int(len(supervised) * 0.8))
+        train, recent = supervised.iloc[:split], supervised.iloc[split:]
+        if len(train) < 40 or len(recent) < 10:
+            continue
+        best_name, best_score = None, -float("inf")
+        for name, candidate in candidates().items():
+            candidate.fit(train[FEATURES], train["target"])
+            score = stable_accuracy(recent["target"], candidate.predict(recent[FEATURES]))
+            if score > best_score:
+                best_name, best_score = name, score
+        model = candidates()[best_name]
+        model.fit(supervised[FEATURES], supervised["target"])
+        direct[horizon] = {"model": model, "model_name": best_name, "score": best_score}
+    return direct
+
+
+def direct_predictions(bundle, targets):
+    """Predict each target directly from the latest real history, without recursion."""
+    history = list(bundle["history"])
+    static = bundle["static"]
+    output = []
+    for position, target in enumerate(sorted(targets, key=lambda item: item["target_at"]), start=1):
+        target_dt = datetime.fromisoformat(target["target_at"].replace("Z", "+00:00"))
+        row = dict(static)
+        row.update(hour=target_dt.hour, minute=target_dt.minute, dayofweek=target_dt.weekday(), is_weekend=int(target_dt.weekday() >= 5), month=target_dt.month)
+        for lag in [1, 2, 3, 4, 6, 12, 24, 48, 96]:
+            row[f"lag_{lag}"] = history[-lag] if len(history) >= lag else history[0]
+        for window in [3, 6, 12, 24, 48, 96]:
+            row[f"rolling_mean_{window}"] = float(np.mean(history[-window:]))
+        direct = bundle["direct_models"].get(position) or bundle["direct_models"].get(4)
+        model_value = float(direct["model"].predict(pd.DataFrame([row], columns=FEATURES))[0])
+        baseline_index = max(1, 96 - position)
+        baseline = history[-baseline_index] if len(history) >= baseline_index else history[-1]
+        value = max(0.0, 0.8 * model_value + 0.2 * float(baseline))
+        output.append({"station_id": str(target["station_id"]), "target_at": target["target_at"], "value": round(value, 4)})
+    return output
+
+
 def git_commit():
     try:
         return subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -268,6 +313,7 @@ def main():
         bundles[station_id] = {"model": best_model, "feature_cols": FEATURES, "last_known": latest,
                                "history": frame["demand"].astype(float).tail(96).tolist(),
                                "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]},
+                               "direct_models": train_direct_models(frame),
                                "model_weight": best_weight}
         selected[station_id] = best_name
         scores.append({"station_id": station_id, "model": best_name, "model_weight": best_weight, "accuracy": best_score, "stability_score": best_score, "train_rows": len(train), "evaluation_rows": len(recent), **station_scores})
@@ -299,7 +345,8 @@ def main():
             latest = frame.iloc[-1]
             bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(), "model_weight": MODEL_WEIGHT,
                                    "history": frame["demand"].astype(float).tail(96).tolist(),
-                                   "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
+                                   "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]},
+                                   "direct_models": train_direct_models(frame)}
     elif champion and drift:
         # A challenger must beat the champion by a meaningful margin; otherwise keep it.
         for score in scores:
@@ -313,7 +360,8 @@ def main():
                 latest = frame.iloc[-1]
                 bundles[station_id] = {"model": model, "feature_cols": FEATURES, "last_known": latest[FEATURES].to_dict(), "model_weight": MODEL_WEIGHT,
                                        "history": frame["demand"].astype(float).tail(96).tolist(),
-                                       "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]}}
+                                       "static": {key: latest[key] for key in ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity", "latitude", "longitude"]},
+                                       "direct_models": train_direct_models(frame)}
     model_names = sorted(set(selected.values()))
     version = "adaptive_" + "_".join(model_names)
     recent_accuracy = float(np.mean([s[selected[s["station_id"]]] for s in scores]))
@@ -324,7 +372,10 @@ def main():
         targets_by_station.setdefault(str(target["station_id"]), []).append(target)
     predictions = []
     for station_id, targets in targets_by_station.items():
-        predictions.extend(recursive_predictions(bundles[station_id], targets))
+        if bundles[station_id].get("direct_models"):
+            predictions.extend(direct_predictions(bundles[station_id], targets))
+        else:
+            predictions.extend(recursive_predictions(bundles[station_id], targets))
     values = [item["value"] for item in predictions]
     print(json.dumps({"prediction_count": len(values), "prediction_min": min(values) if values else None, "prediction_max": max(values) if values else None, "prediction_mean": float(np.mean(values)) if values else None}, indent=2))
     payload = {
